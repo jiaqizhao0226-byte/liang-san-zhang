@@ -322,6 +322,8 @@ button:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--amber);out
 <script>
 (()=>{
 const CFG={START:2000,ANTE:20,SMALL:20,BAO:20,CAP:3};
+/* AI 思考时间（毫秒）：最短 + 随机浮动 */
+const THINK={duel:[1400,1000],table:[1100,800],look:1000};
 const ORDER=['ante','A','R1','B','R2','C','show'];
 const STEPS=['底注','暗注','亮一张','明注','亮或保','终注','开牌'];
 const NAMES=['你','七号','小罗','阿飞','豆豆'];
@@ -480,7 +482,7 @@ function startStreet(st){
 }
 function schedule(){
   if(G.turn<0)return;const i=G.turn;
-  if(G.p[i].bot)later(()=>aiAct(i),G.n>2?420+rnd()*480:650+rnd()*700);
+  if(G.p[i].bot){const t=G.n>2?THINK.table:THINK.duel;later(()=>aiAct(i),t[0]+rnd()*t[1])}
 }
 function act(i,a,x){
   if(G.turn!==i||G.result)return;
@@ -499,7 +501,7 @@ function act(i,a,x){
     bubble(i,`${p.looked?'加注':'闷加'} ${x}`,'amber');
   }
   const nx=findActor(i,false);
-  if(nx<0){G.turn=-1;G.msg='这一轮下注结束';render();return later(endStreet,850)}
+  if(nx<0){G.turn=-1;G.msg='这一轮下注结束';render();return later(endStreet,1200)}
   G.turn=nx;G.msg=msgFor(false);render();schedule();
 }
 function endStreet(){
@@ -578,7 +580,7 @@ function aiAct(i){
   const a=G.p[i],tc=toCall(i);
   if(!a.looked){
     const lp=!a.blindPlan?1:({A:.12,B:.35,C:.5}[G.stage]||0)+(tc>0&&G.raises>=2?.3:0);
-    if(rnd()<lp){a.looked=true;bubble(i,'看牌','violet');render();return later(()=>aiAct(i),G.n>2?380:650)}
+    if(rnd()<lp){a.looked=true;bubble(i,'看牌','violet');render();return later(()=>aiAct(i),THINK.look)}
   }
   const L=live().length,fair=1/L;
   const others=G.raiseBy.filter(j=>j!==i).length;
@@ -754,7 +756,7 @@ function bump(el){if(reduce)return;el.animate([{transform:'scale(1.3)'},{transfo
 const bubbleT=[];
 function bubble(i,text,cls=''){
   const b=seatEls[i].querySelector('.bubble');b.textContent=text;b.className='bubble show '+cls;
-  clearTimeout(bubbleT[i]);bubbleT[i]=setTimeout(()=>b.classList.remove('show'),G&&G.fast?700:1500);
+  clearTimeout(bubbleT[i]);bubbleT[i]=setTimeout(()=>b.classList.remove('show'),G&&G.fast?900:2200);
 }
 function centerOf(el){const r=el.getBoundingClientRect(),ar=app.getBoundingClientRect();return{x:r.left-ar.left+r.width/2,y:r.top-ar.top+r.height/2}}
 function fly(from,to,n){
