@@ -271,7 +271,6 @@ button:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--amber);out
 .slide input::-moz-range-thumb{width:22px;height:22px;background:var(--amber);border:3px solid var(--ink);border-radius:8px}
 .rv{min-width:86px;text-align:right}.rv b{display:block;font-family:var(--px);font-weight:400;font-size:17px;color:var(--amber)}.rv small{font-family:var(--cn);font-size:12px;color:#cfc6f0}
 .row2s{display:flex;gap:8px}
-.bubble.chat{background:#fff3c4;font-size:15px}
 .app.m8{--cw:min(23vw,11.4vh,100px);--ow:min(8.6vw,4.6vh,36px)}
 .app.m8 .opps{grid-template-columns:repeat(3,1fr);gap:6px;padding:4px 8px 0}
 .app.m8 .oseat{padding:5px 5px 7px;gap:4px;border-width:2px;border-radius:10px}
@@ -441,15 +440,6 @@ const STYLES={
   rock:   {label:'石头',  call:.08, value:1.12,aggr:.5, bluff:.2, blind:.03,bao:.6, trust:1,  big:.3},
   trap:   {label:'狡猾',  call:0,   value:.95, aggr:.85,bluff:1.3,blind:.1, bao:1.3,trust:.9, big:.6,slow:.55},
   bal:    {label:'均衡',  call:0,   value:1,   aggr:.75,bluff:1,  blind:.1, bao:1,  trust:.9, big:.5}};
-/* bot 的台词：只在关键动作后偶尔说一句 */
-const CHAT={
-  tag:{raise:['这手我来','接得住吗'],call:['我看看'],fold:['这把让你'],win:['早说了','耐心是美德']},
-  station:{raise:['我也来点'],call:['我不信','你在诈唬吧','让我看看'],fold:['好吧好吧'],win:['抓到了！','就知道你诈']},
-  maniac:{raise:['加！','怕了吗','全场我最大'],call:['随便'],fold:['下把再来'],win:['冲就完事','哈哈哈']},
-  gambler:{raise:['闷着也敢','运气来了'],call:['赌一把'],fold:['手气不行'],win:['闷王驾到','天选之人']},
-  rock:{raise:['我有牌'],call:['嗯'],fold:['不玩','太贵了'],win:['稳']},
-  trap:{raise:['上钩了','反手一刀'],call:['有意思'],fold:['算了'],win:['谢谢款待','装弱而已']},
-  bal:{raise:['价值下注'],call:['赔率够'],fold:['打不过'],win:['算准了']}};
 const BOTSTYLE=['','tag','station','maniac','gambler','rock','trap','bal'];
 let SIM=false,simQ=[];
 /* 联机：host=房主手机跑牌局并当裁判；guest=只显示房主发来的视图、把操作发回去 */
@@ -626,13 +616,29 @@ function lik(a,s){
   }
   return 1;
 }
+/* 对手记忆：一场里每个人的诈唬率、被加注后的弃牌率（带先验，前几局保持中性）。
+   只用开牌时大家都能看到的牌来统计，不偷看任何暗牌 */
+const newStats=n=>Array.from({length:n},()=>({sd:0,bluff:0,faced:0,folds:0}));
+const bluffRate=j=>{const t=G.stats&&G.stats[j];return t?(t.bluff+1)/(t.sd+4):.25};
+const foldRate=j=>{const t=G.stats&&G.stats[j];return t?(t.folds+2)/(t.faced+5):.4};
+/* 越爱诈唬，他的加注和暗保越不可信 */
+const raiseTrust=j=>Math.max(.3,Math.min(1.3,1.3-2*(bluffRate(j)-.15)));
+/* 亮牌选择也是线索：大多数人会把大牌、成对的那张藏起来。
+   rev1：前两张里亮了 k；rev2：在剩下两张里亮了 k（f 是第一轮亮的那张） */
+function revLik(e,h){
+  if(e.a==='rev1'){const v=h[e.k].r,o=h[1-e.k].r;return v===o?1:v<o?.6:.4}
+  const alt=3-e.k-e.f,vis=h[e.f].r,showPair=h[e.k].r===vis,altPair=h[alt].r===vis;
+  if(showPair&&!altPair)return .35;
+  if(altPair&&!showPair)return 1;
+  return h[e.k].r<h[alt].r?.65:.35;
+}
 /* 读牌胜率：按对手每一步动作给他们可能的暗牌加权（trust 控制相信程度） */
 function equityW(i,iters,trust){
-  const me=G.p[i],opps=live().filter(j=>j!==i);
+  const me=G.p[i],opps=live().filter(j=>j!==i),readRev=me.readRev===true,model=me.model!==false;
   if(!opps.length)return 1;
   const mk=knownIdx(i).map(k=>me.cards[k]),used=new Set(mk.map(cid));
   const O=opps.map(j=>{const p=G.p[j],fix=p.cards.map((c,k)=>p.revealed[k]?c:null);fix.forEach(c=>c&&used.add(cid(c)));
-    return{fix,hid:[0,1,2].filter(k=>!fix[k]),hist:p.hist.filter(e=>e.looked)}});
+    return{fix,rt:model?raiseTrust(j):1,hid:[0,1,2].filter(k=>!fix[k]),hist:p.hist.filter(e=>e.looked&&(readRev||(e.a!=='rev1'&&e.a!=='rev2')))}});
   const pool=DECK.filter(c=>!used.has(cid(c)));
   const needMe=3-mk.length;let need=needMe;O.forEach(o=>need+=o.hid.length);
   const h=[null,null,null];let W=0,T=0;
@@ -644,8 +650,10 @@ function equityW(i,iters,trust){
       const sc=score(h);
       if(trust>0&&o.hist.length){
         const s3=PCT3[sc],s2=PCT2[cid(h[0])*64+cid(h[1])];let l=1;
-        for(const e of o.hist)l*=lik(e.a,(e.st==='A'||e.st==='B')?s2:s3);
-        w*=trust===1?l:Math.pow(l,trust);
+        let la=1;
+        for(const e of o.hist){if(e.a==='raise'||e.a==='bao')la*=lik(e.a,(e.st==='A'||e.st==='B')?s2:s3);
+          else l*=(e.a==='rev1'||e.a==='rev2')?revLik(e,h):lik(e.a,(e.st==='A'||e.st==='B')?s2:s3)}
+        w*=(trust===1?l:Math.pow(l,trust))*(la===1?1:Math.pow(la,trust*o.rt));
       }
       if(sc>my)lost=true;else if(sc===my)ties++;
     }
@@ -661,7 +669,7 @@ function startSession(){
   G={n:S.n,lo:LO,hand:0,dealer:S.n-1,p:[],pot:0,stage:'ante',turn:-1,curBet:0,raises:0,raiseBy:[],first:-1,pick:null,humanBao:false,locked:false,result:null,fast:false,skip:false,msg:''};
   for(let i=0;i<S.n;i++){const who=i===0?0:S.n===2?S.opp:i;
     G.p.push({who,name:NAMES[who],style:BOTSTYLE[who],bot:i>0,policy:'new',baoPol:'ai',chips:CFG.START,cards:[],hist:[],looked:false,revealed:[false,false,false],bao:false,folded:false,eff:0,acted:false,startChips:CFG.START})}
-  eqCache.k='';G.baoCost=CFG.BAO;
+  eqCache.k='';G.baoCost=CFG.BAO;G.stats=newStats(G.n);
   buildTables();
   if(!SIM)buildTable();
   $('#lobby').classList.remove('on');$('#over').classList.remove('on');
@@ -707,6 +715,7 @@ function schedule(){
 function act(i,a,x){
   if(G.turn!==i||G.result)return;
   const p=G.p[i];clearTimeout(G.turnTimer);
+  if(G.stats&&toCall(i)>0&&G.raiseBy.length&&G.raiseBy[G.raiseBy.length-1]!==i){G.stats[i].faced++;if(a==='fold')G.stats[i].folds++}
   if(a==='fold'){
     p.folded=true;bubble(i,'弃牌','rose');
     if(i===0)G.fast=true;
@@ -757,6 +766,7 @@ function doReveal(){
     if(p.folded)return;
     const ch=p.bot?p.aiPick:p.choice;
     if(st==='R2'){p.r2=true;if(p.chips>=G.baoCost)p.hist.push({a:ch==='bao'?'bao':'show',st,looked:p.looked})}
+    if(ch!=='bao')p.hist.push({a:st==='R1'?'rev1':'rev2',st,k:ch,f:p.revealed.indexOf(true),looked:p.looked});
     if(ch==='bao'){p.bao=true;p.didBao=true;pay(i,G.baoCost);bubble(i,'暗保','amber');baoers.push(nm(i))}
     else p.revealed[ch]=true;
   });
@@ -772,6 +782,8 @@ function showdown(){
   later(()=>endHand(W,'show'),1100);
 }
 function endHand(W,how){
+  if(how==='show'&&G.stats)live().forEach(i=>{const p=G.p[i];
+    if(p.hist.some(e=>e.a==='raise'&&e.looked&&(e.st==='B'||e.st==='C'))){G.stats[i].sd++;if(PCT3[score(p.cards)]<.5)G.stats[i].bluff++}});
   const pot=G.pot,share=Math.floor(pot/W.length/5)*5,rest=pot-share*W.length;
   W.forEach((i,k)=>{G.p[i].chips+=share+(k===0?rest:0);flyOut(i)});
   G.pot=0;
@@ -782,7 +794,6 @@ function endHand(W,how){
   else if(G.n===2){const o=G.p[1],a=handName(G.p[0].cards),b=handName(o.cards);text=W[0]===0?`你的${a}赢了${o.name}的${b}`:`${o.name}的${b}赢了你的${a}`}
   else text=`${nm(W[0])}的${handName(G.p[W[0]].cards)}赢下底池`;
   G.result={W,how,net,text,pot};G.msgKind='event';G.msg=text;G.fast=false;G.skip=false;G.turn=-1;render();
-  if(!SIM&&how==='show')W.forEach(i=>{const p=G.p[i];if(p.bot&&CHAT[p.style]&&rnd()<.5){const t=token,l=CHAT[p.style].win;setTimeout(()=>{if(t===token){bubble(i,l[rnd()*l.length|0],'chat',true);if(NET==='host')broadcast()}},1500)}});
   if(NET==='host')later(()=>{if(G.result)newHand()},10000);
 }
 function gameOver(youWin){
@@ -834,30 +845,28 @@ function aiAct(i){
   const L=live().length,fair=1/L;
   const e=equityW(i,G.n>2?450:800,sty.trust);
   const opts=raiseOptions(i),r=rnd(),cost=tc*rate(a),po=cost/(G.pot+cost);
-  const valueT=Math.min(.92,(L>2?Math.max(.42,fair*2.1):.62)*sty.value);
+  const others=live().filter(j=>j!==i),fr=a.model===false?.4:others.reduce((t,j)=>t+foldRate(j),0)/Math.max(1,others.length);
+  const bluffMul=Math.max(.4,Math.min(2.2,fr/.4)),thin=a.model===false?1:Math.max(.9,Math.min(1.05,1-(.4-fr)*.35));
+  const valueT=Math.min(.92,(L>2?Math.max(.42,fair*2.1):.62)*sty.value*thin);
   const strongT=Math.min(.96,(L>2?Math.max(.6,fair*3):.8)*sty.value);
   const size=big=>opts[big?opts.length-1:Math.min(1,opts.length-1)].x;
+  /* 均衡下注：好牌和诈唬用同一套大小分布，只靠下注大小读不出牌力 */
+  const pBig=Math.min(.85,.2+.7*sty.big),mix=nuts=>a.balSize===false?nuts:rnd()<pBig+(nuts?.08:0);
   const sc=scare(i),margin=(G.stage==='C'?.03:G.stage==='B'?0:-.06)+sty.call;
   /* 难的决定多想一会儿，明显的决定出手快 */
   const hard=tc>0?Math.abs(e-po-margin)<.07:Math.abs(e-valueT)<.06;
-  const go=(A,X)=>{if(SIM)return act(i,A,X);const d=hard?900+rnd()*1500:150+rnd()*350;later(()=>act(i,A,X),d);talk(i,A,d)};
+  const go=(A,X)=>{if(SIM)return act(i,A,X);const d=hard?900+rnd()*1500:150+rnd()*350;later(()=>act(i,A,X),d)};
   if(tc===0){
     if(sty.slow&&e>strongT&&G.stage!=='C'&&r<sty.slow)return go('check');
-    if(opts.length&&e>valueT&&r<.55+.4*sty.aggr)return go('raise',size(e>strongT||rnd()<sty.big*.5));
-    const bp=({A:.05,B:.09,C:.12}[G.stage])*(1+1.5*sc)*sty.bluff/Math.pow(L-1,1.2);
-    if(opts.length&&e<.45&&r<bp)return go('raise',size(rnd()<sty.big));
+    if(opts.length&&e>valueT&&r<.55+.4*sty.aggr)return go('raise',size(a.balSize===false?(e>strongT||rnd()<sty.big*.5):mix(e>strongT)));
+    const bp=({A:.05,B:.09,C:.12}[G.stage])*(1+1.5*sc)*sty.bluff*bluffMul/Math.pow(L-1,1.2);
+    if(opts.length&&e<.45&&r<bp)return go('raise',size(a.balSize===false?rnd()<sty.big:mix(false)));
     return go('check');
   }
-  if(opts.length&&e>strongT&&r<.4+.5*sty.aggr+(sty.slow?.3:0))return go('raise',size(true));
+  if(opts.length&&e>strongT&&r<.4+.5*sty.aggr+(sty.slow?.3:0))return go('raise',size(a.balSize===false?true:mix(true)));
   if(e>=po+margin&&e>.02)return go('call');
-  if(opts.length&&G.stage!=='C'&&r<.04*sty.bluff*(1+sc)/Math.pow(L-1,1.5))return go('raise',size(true));
+  if(opts.length&&G.stage!=='C'&&r<.04*sty.bluff*(1+sc)/Math.pow(L-1,1.5))return go('raise',size(a.balSize===false?true:mix(false)));
   return go('fold');
-}
-function talk(i,A,d){
-  const p=G.p[i],lines=CHAT[p.style];if(!lines||rnd()>.28)return;
-  const kind=A==='raise'?'raise':A==='call'&&G.stage==='C'?'call':A==='fold'&&G.raiseBy.length?'fold':null;
-  if(!kind)return;const line=lines[kind][rnd()*lines[kind].length|0],t=token;
-  setTimeout(()=>{if(t!==token||!G||SIM)return;bubble(i,line,'chat',true);if(NET==='host')broadcast()},d+1300);
 }
 /* 旧版 AI，只用于模拟对比 */
 function aiRevealV1(i,st){
@@ -904,7 +913,7 @@ function runSim(o){
   Object.assign(S,{lo:o.lo||2,n:o.n||2,opp:o.opp||1});
   if(o.baok!==undefined)BAOK=o.baok;BAOMODE=o.baomode||'fee';
   startSession();
-  G.p.forEach((p,i)=>{p.bot=true;const v=(o.seats||[])[i]||{};p.style=v.style||p.style||'tag';p.policy=v.policy||'new';p.baoPol=v.bao||'ai'});
+  G.p.forEach((p,i)=>{p.bot=true;const v=(o.seats||[])[i]||{};p.style=v.style||p.style||'tag';p.policy=v.policy||'new';p.baoPol=v.bao||'ai';p.readRev=v.rev===true;p.balSize=v.bal!==false;p.model=v.model!==false});
   const n=G.n,R={r2pot:0,r2hands:0,st:Array.from({length:n},()=>({raise:0,call:0,check:0,fold:0,bluff:0,blindAct:0,vpip:0})),hands:0,net:Array(n).fill(0),sq:Array(n).fill(0),bao:Array(n).fill(0),r2:Array(n).fill(0),won:Array(n).fill(0),show:0,pot:0};
   let guard=0;
   while(R.hands<o.hands&&guard++<5e7){
@@ -919,6 +928,7 @@ function runSim(o){
     if(G.r2pot){R.r2pot+=G.r2pot;R.r2hands++}
     G.result.W.forEach(i=>R.won[i]++);
     if(G.result.how==='show')R.show++;R.pot+=G.result.pot;R.hands++;
+    if(o.resetEvery&&R.hands%o.resetEvery===0)G.stats=newStats(G.n);
     newHand();
   }
   SIM=false;return R;
@@ -1370,7 +1380,7 @@ function startNetGame(){
     else if(g){g.seat=i;G.p.push({...base,name:g.name,human:true,bot:false,remote:true})}
     else G.p.push({...base,name:NAMES[i],style:BOTSTYLE[i],bot:true});
   }
-  eqCache.k='';G.baoCost=CFG.BAO;buildTables();buildTable();
+  eqCache.k='';G.baoCost=CFG.BAO;G.stats=newStats(G.n);buildTables();buildTable();
   $('#lobby').classList.remove('on');$('#room').classList.remove('on');
   conns.forEach(e=>{try{e.conn.send({t:'start',seat:e.seat,lo:LO,n:G.n})}catch(_){}});
   newHand();
