@@ -958,7 +958,9 @@ function aiAct(i){
     return go('check');
   }
   if(opts.length&&e>strongT&&r<.4+.5*sty.aggr+(sty.slow?.3:0))return go('raise',size(a.balSize===false?true:mix(true)));
-  if(e>=po+margin&&e>.02)return go('call');
+  /* 底线：终注轮三张都看过、牌力在后 30% 的空气牌没有摊牌价值，面对下注只能弃或诈加，任何牌风都不跟 */
+  const air=G.stage==='C'&&knownIdx(i).length===3&&PCT3[score(a.cards)]<.3;
+  if(!air&&e>=po+margin&&e>.02)return go('call');
   if(opts.length&&G.stage!=='C'&&r<.04*sty.bluff*(1+sc)/Math.pow(L-1,1.5))return go('raise',size(a.balSize===false?true:mix(false)));
   return go('fold');
 }
@@ -1021,7 +1023,8 @@ function runSim(o){
       if(p.hist.some(e=>e.a==='call'||e.a==='raise'))t.vpip++;
       if(p.folded)t.fold++;
       for(const e of p.hist){if(t[e.a]!==undefined&&e.a!=='fold')t[e.a]++;if(!e.looked)t.blindAct++;
-        if(e.a==='raise'&&e.looked&&((e.st==='A'||e.st==='B')?s2:s3)<.45)t.bluff++}});
+        if(e.a==='raise'&&e.looked&&((e.st==='A'||e.st==='B')?s2:s3)<.45)t.bluff++;
+        if(e.a==='call'&&e.looked&&e.st==='C'){t.callC=(t.callC||0)+1;if(s3<.3)t.airCallC=(t.airCallC||0)+1}}});
     if(G.r2pot){R.r2pot+=G.r2pot;R.r2hands++}
     G.result.W.forEach(i=>R.won[i]++);
     if(G.result.how==='show')R.show++;R.pot+=G.result.pot;R.hands++;
