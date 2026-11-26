@@ -167,6 +167,17 @@ button:focus-visible,[tabindex]:focus-visible{outline:3px solid var(--amber);out
 
 /* table */
 .table{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:6px 14px}
+/* 屏幕放不下时（比如 Safari 工具栏占了高度）收起次要信息 */
+.app.tight .steps li{font-size:0;gap:0}
+.app.tight .eff{display:none}
+.app.tight .table{gap:6px;padding:4px 14px}
+.app.tight .mat{padding:5px 12px}
+.app.tight .pot-v{font-size:21px}
+.app.tight .msg{min-height:0;font-size:14px}
+.app.tight .actions{min-height:70px;padding-top:8px}
+.app.tight .btn{padding:11px 4px 9px}
+.app.tight .zone.me{gap:4px}
+.app.tight .me-seat{margin-top:0}
 .steps{list-style:none;display:flex;justify-content:space-between;width:100%;max-width:380px;position:relative}
 .steps::before{content:"";position:absolute;left:12px;right:12px;top:6px;height:3px;background:var(--ink)}
 .steps li{position:relative;display:flex;flex-direction:column;align-items:center;gap:5px;font-family:var(--cn);font-size:12px;color:#7d71a8;flex:1}
@@ -1061,6 +1072,26 @@ function mkCard(o,k,mini){
   if(o===0)el.addEventListener('click',()=>pickCard(k));
   return el;
 }
+/* 自适应：量一下中间牌桌区放不放得下，放不下就按比例缩小牌，再不行就收起次要信息 */
+function tableNeed(){const tb=$('.table'),cs=getComputedStyle(tb);let h=parseFloat(cs.paddingTop)+parseFloat(cs.paddingBottom);
+  const kids=[...tb.children].filter(c=>c.offsetParent!==null);kids.forEach(c=>h+=c.offsetHeight);h+=parseFloat(cs.rowGap||cs.gap||0)*Math.max(0,kids.length-1);
+  return h-tb.clientHeight}
+let fitRaf=0;
+function fitLayout(){
+  if(!G||SIM||!cardEls[0]||!cardEls[0][0])return;
+  app.style.removeProperty('--cw');app.style.removeProperty('--ow');app.classList.remove('tight');
+  const base0=cardEls[0][0].offsetWidth,baseO=cardEls[1]&&cardEls[1][0]?cardEls[1][0].offsetWidth:0;
+  let k=1;
+  for(let t=0;t<14&&tableNeed()>0;t++){
+    if(t===3)app.classList.add('tight');
+    k=Math.max(.5,k-.06);
+    app.style.setProperty('--cw',(base0*k).toFixed(1)+'px');
+    if(baseO)app.style.setProperty('--ow',(baseO*Math.max(.62,k)).toFixed(1)+'px');
+    if(k<=.5)break;
+  }
+}
+const refit=()=>{cancelAnimationFrame(fitRaf);fitRaf=requestAnimationFrame(fitLayout)};
+addEventListener('resize',refit);if(window.visualViewport)visualViewport.addEventListener('resize',refit);
 function buildTable(){
   app.classList.toggle('m5',G.n>2);app.classList.toggle('m8',G.n>5);
   const opps=$('#opps');opps.innerHTML='';seatEls=[$('#seat0')];cardEls=[];
@@ -1070,6 +1101,7 @@ function buildTable(){
     opps.appendChild(el);seatEls[i]=el;
   }
   seatEls.forEach((el,i)=>{const w=el.querySelector('.cards');w.innerHTML='';cardEls[i]=[];for(let k=0;k<3;k++){const c=mkCard(i,k,i>0&&G.n>2);w.appendChild(c);cardEls[i].push(c)}});
+  refit();
 }
 function setFace(el,c){
   const f=el.querySelector('.front'),red=c.s===1||c.s===3,s=SUITS[c.s],R=RL(c.r);
@@ -1092,6 +1124,7 @@ function render(){
   tweenPot(G.pot);renderPile(G.pot);const flips=[];
   $('#effLine').textContent=betting()&&G.curBet>0?`本轮注额 ${G.curBet}　已加注 ${G.raises}/${CFG.CAP}`:'';
   $('#msg').textContent=NET==='host'?detok(G.msg,0):G.msg;
+  {const mh=$('#msg').offsetHeight;if(mh!==render.mh){render.mh=mh;refit()}}
   [...$('#steps').children].forEach((li,k)=>{li.className=k<si?'done':k===si?'cur':''});
   const won=G.result&&G.result.how==='show'?G.result.W:null;
   const compact=G.n>2;
