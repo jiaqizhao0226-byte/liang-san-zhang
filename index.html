@@ -578,7 +578,7 @@ input{user-select:text;-webkit-user-select:text}
       <button class="btn violet" data-a="host">建房间</button>
       <button class="btn teal" data-a="joinOpen">加入</button>
     </div>
-    <p class="lb-note" id="netNote" hidden>联机要用房主电脑开的地址打开（形如 http://192.168.x.x:8787），问房主要链接。</p>
+    <p class="lb-note" id="netNote" hidden>联机要用房主电脑开的地址打开（形如 http://192.168.x.x:8080），问房主要链接。</p>
     <div class="lb-btns" id="netBtns" hidden><button class="btn amber" data-a="endMatch" id="btnEnd" hidden>结束本场，看结算</button><button class="btn rose" data-a="leave" id="btnLeave">离开房间</button></div>
   </div>
 </div>
@@ -588,7 +588,8 @@ input{user-select:text;-webkit-user-select:text}
 /*<engine>  规则引擎 + AI：浏览器里直接运行；联机服务器 server.js 读取这一段，每个房间单独跑一份 */
 const CFG={START:2000,ANTE:20,SMALL:20,BAO:20,CAP:3};
 /* 联机时人的操作时限（毫秒），由服务器计时 */
-const NET_TURN_MS=30000,NET_NEXT_MS=10000;
+const NET_TURN_MS=30000;
+/* 联机两手之间不自动开：房主点「下一把」才开（netNext） */
 /* 服务器挂的回调：一手结束、一场结束 */
 const HOOK={};
 /* AI 思考时间（毫秒）：最短 + 随机浮动 */
@@ -910,7 +911,7 @@ function newHand(){
   G.p.forEach((p,i)=>{if((i>0||NET!=='off')&&p.chips<CFG.ANTE){p.bought=(p.bought||0)+CFG.START-p.chips;p.rebuys=(p.rebuys||0)+1;p.chips=CFG.START;rebuy.push(nm(i))}});
   G.hand++;G.dealer=(G.dealer+1)%G.n;
   const deck=shuffle(DECK.slice());
-  G.p.forEach(p=>Object.assign(p,{foldSt:null,cards:deck.splice(0,HN),looked:false,revealed:Array(HN).fill(false),suitShown:Array(HN).fill(false),bao:false,folded:false,eff:0,acted:false,startChips:p.chips,blindPlan:!!p.style&&rnd()<STYLES[p.style].blind,aiPick:null,choice:null,hist:[],r2:false,didBao:false}));
+  G.p.forEach(p=>Object.assign(p,{foldSt:null,cards:deck.splice(0,HN),looked:false,revealed:Array(HN).fill(false),suitShown:Array(HN).fill(false),bao:false,folded:false,eff:0,acted:false,startChips:p.chips,blindPlan:!!p.style&&rnd()<STYLES[p.style].blind,aiPick:null,choice:null,hist:[],r2:false,didBao:false,shown:false}));
   Object.assign(G,{log:[],eat235:false,r2pot:0,pot:0,stage:'ante',turn:-1,curBet:0,raises:0,raiseBy:[],first:-1,pick:null,humanBao:false,locked:false,result:null});
   G.msgKind='event';G.msg=rebuy.length?`${rebuy.join('、')}补充了筹码`:`发牌，每人下底注 ${CFG.ANTE}`;
   hideSheet();clearFaces();potShown=G.pot;$('#potV').textContent=G.pot;render();dealAnim();
@@ -1041,8 +1042,7 @@ function endHand(W,how){
   if(NET==='host'){
     if(HOOK.handEnd)HOOK.handEnd(W,how,pot);
     if(G.endAfter){G.deadline=0;render();later(()=>HOOK.matchEnd&&HOOK.matchEnd(),3500);return}
-    G.deadline=Date.now()+NET_NEXT_MS;render();
-    later(()=>{if(G.result&&!G.endAfter)newHand()},NET_NEXT_MS);
+    G.deadline=0;render();
   }
 }
 function gameOver(youWin){
@@ -1236,7 +1236,8 @@ function viewFor(v){
   G.p.forEach((q,i)=>{const kn=i===v?knownIdx(i):[];
     P[rot(i)]={name:q.name,who:q.who,style:q.style,human:!!q.human,bot:!!q.bot,chips:q.chips,looked:q.looked,revealed:q.revealed.slice(),bao:q.bao,folded:q.folded,eff:q.eff,acted:q.acted,startChips:q.startChips,
       suitShown:(q.suitShown||[]).slice(),suitV:q.cards.map((c,k)=>q.suitShown&&q.suitShown[k]&&!q.revealed[k]?c.s:null),
-      cards:q.cards.map((c,k)=>(isShow&&!q.folded)||q.revealed[k]||kn.includes(k)?c:null)}});
+      shown:!!q.shown,
+      cards:q.cards.map((c,k)=>(isShow&&!q.folded)||q.revealed[k]||kn.includes(k)||(G.result&&q.shown)?c:null)}});
   return{t:'state',hand:G.hand,n,lo:G.lo,stage:G.stage,turn:rot(G.turn),curBet:G.curBet,raises:G.raises,pot:G.pot,first:rot(G.first),dealer:rot(G.dealer),baoCost:G.baoCost,suitCost:G.suitCost,
     msg:G.msgKind==='prompt'?null:detok(G.msg,v),msgStart:G.msgStart,myChoice:G.p[v].choice!=null,
     left:G.deadline?Math.max(0,G.deadline-Date.now()):0,endAfter:!!G.endAfter,
@@ -1249,6 +1250,10 @@ function netMsg(i,m){
   if(m.t==='act'){
     const x=+m.x,ok=G.turn===i&&!G.result&&(m.a==='fold'||(m.a==='check'&&toCall(i)===0)||(m.a==='call'&&toCall(i)>0)||(m.a==='raise'&&(R=>R&&(R.fixed?raiseOptions(i).some(o=>o.x===x):((x>=R.min&&x<=R.max&&x%10===0)||x===R.all)))(raiseRange(i))));
     if(ok)act(i,m.a,x);
+  }else if(m.t==='show'){
+    /* 一手结束后亮自己的牌：弃牌的人，或别人都弃牌时的赢家（开牌时没弃的人本来就亮了） */
+    if(!G.result||p.shown||(G.result.how==='show'&&!p.folded))return;
+    p.shown=true;bubble(i,'亮牌','teal');render();
   }else if(m.t==='look'){
     if(!p.looked&&!p.folded&&!G.result){p.looked=true;bubble(i,'看牌','violet');if(G.msgKind==='prompt')setPrompt(G.msgStart);render()}
   }else if(m.t==='reveal'){
@@ -1268,6 +1273,8 @@ function netLeft(i){
   else if(G.turn===i&&!G.result){clearTimeout(G.turnTimer);G.deadline=0;schedule()}
   render();
 }
+/* 房主点「下一把」（服务器已核对是房主） */
+function netNext(){if(!G||!G.result||G.endAfter)return;token++;newHand()}
 /* 房主要求结束本场：两手之间立即结算，打到一半就等这一手打完 */
 function netEnd(){
   if(!G||G.endAfter)return false;G.endAfter=true;
@@ -1345,7 +1352,7 @@ function rulesPlay(){
 }
 
 /* ---------- 更新记录（由 更新记录.md 生成） ---------- */
-const CHANGELOG=[{"v":"v0.11","d":"11-27 11:39","items":["<b>联机改成服务器当裁判</b>：房主在自己电脑上运行一个小服务器，大家用手机浏览器打开电脑的地址就能联机，不再用点对点连接。发牌、判输赢、计时、AI 都在服务器上，每台手机只收到自己能看的牌，房主也看不到别人的暗牌。","房码改成 6 位。房间页里，房主可以加减座位、加 AI（能换角色）、一键补满 AI、移除 AI、把人移出房间。空位开局时由 AI 补上。","牌堆、四张牌、各种规则开关挪到房主点「开始」后弹出的<b>本场设置</b>里，其他人会看到「房主正在设置本场…」。设置会沿用上一场。","一场打到房主点「结束本场」为止：打到一半点的话，这一手打完再结算，所有人会看到「最后一手」提示。","新增<b>本场结算</b>：按净输赢排名（净输赢 = 最后筹码 − 入场 2000 − 补的码），显示赢了几手、补码次数、最大一池；评出本场赢家、诈唬王、最大一手、铁头（诈唬被抓最多）、提款机（补码最多）。点「回到房间」就能再开一场。","每步操作限时 30 秒，牌桌底部有倒计时条，最后 10 秒变红；超时自动过牌或弃牌。两手之间等 10 秒，会显示倒数。","有人掉线或中途离开，AI 立刻接管他的座位打完这一场，结算里标「托管」。房主走了，房主身份自动交给下一位玩家。不做断线重连。","联机中点左上角「模式」打开房间菜单：回到牌桌、结束本场（房主）、离开。","联机消息里的结果文字改成按每个人的视角写，不再把「底池归你」发给所有人。","去掉网页里的点对点联机组件，文件小了约 90KB。"]},{"v":"v0.10","d":"11-27 11:05","items":["新增<b>四张牌</b>开关（默认关闭）：每人四张，开牌时挑最好的三张按拼三张比。第一轮看前两张，第二轮看后两张；最后桌上两张明牌、两张暗牌。","有一张牌不参与比大小，可以亮出去当诱饵；AI 也会这么做。","你看全四张后，提示栏会写明哪张不算；开牌时没用上的牌会变暗。","人数上限：经典 8 人、去小牌 7 人、只留大牌 5 人。四张模式下不用「235 吃豹子」。","牌力参考页会显示四张模式下的牌型概率。","AI 算牌力改用查表，三张模式也快了一倍多，手机上 AI 思考更流畅。","小屏幕上，自己牌上方的「明牌 / 暗牌」标签不再压住中间的提示文字。"]},{"v":"v0.9.3","d":"11-27 00:49","items":["复盘按钮改成亮紫色的「看复盘」，不再容易错过。","人数选择里 4 人局标上「推荐」（多人局的甜区），人数仍然自己选。","AI 亮牌按牌风混合：第一轮石头型更爱亮小藏大、松凶更爱亮大装强；第二轮拿到对子时，有的牌风会故意把对子亮出来施压，不再「从不亮明对」。","复盘的关键决定加上牌力档位标签（坚果 / 强牌 / 中对 / 弱对 / 大单张 / 弱牌 / 空气等），一眼看出 AI 当时拿的是什么级别的牌。","新增<b>新手模式</b>开关（默认关闭）：加注只有小、中、大三档（40 / 80 / 160），不用拖滑杆。和超池加注二选一。"]},{"v":"v0.9.2","d":"11-26 16:30","items":["游戏里加入<b>更新记录</b>：大厅「怎么玩」旁边的按钮可以查看每个版本改了什么，有新版本时按钮上会出现小红点。"]},{"v":"v0.9.1","d":"11-26 16:06","items":["<b>复盘改版</b>：最上面一句话说清这局谁用什么牌赢了多少、看点是什么；所有人的牌画成像素小牌；只挑出 AI 最关键的几个决定，每个配一句大白话理由和一根胜率条（条过了竖线就该跟或下注，没过就该弃）；完整过程折叠起来，每回合压成一行。"]},{"v":"v0.9","d":"11-26 15:33","items":["新增<b>牌力参考页</b>：规则弹窗分成「怎么玩」和「牌力参考」两页。参考页按当前牌堆列出各牌型的出现概率、几手代表牌在 2/4/6/8 人局的胜率，以及起手两张该强打、可玩还是该弃。","新增<b>复盘</b>（仅单机）：每局结束可以查看所有人的牌，以及每个 AI 每一步的动作和理由。","新增<b>超池加注</b>开关（默认关闭）：加注范围变成底池的 25% 到 2.5 倍，还能全下。全下以在局玩家里筹码最少的人为上限，不会出现边池。","规则页「暗注」的描述改成加注金额自己定。"]},{"v":"v0.8.1","d":"11-26 15:12","items":["AI 底线：终注轮牌力排在后 30% 的空气牌，面对下注只能弃牌或诈唬加注，任何牌风都不跟注。修复了跟注站「拿空气牌跟注」的问题。"]},{"v":"v0.8","d":"11-26 13:29","items":["只亮花色的价格从底池的 10% 涨到 15%。","新增<b>封口费</b>开关（默认关闭）：打开后，暗保和只亮花色的钱平分给其他在局玩家，不进底池。"]},{"v":"v0.7.1","d":"11-26 12:27","items":["按手机实际可用高度自适应布局。修复 iPhone Safari 带工具栏时，多人局里流程条压到对手、提示文字被挡的问题。"]},{"v":"v0.7","d":"11-26 12:14","items":["新增<b>分级亮牌</b>开关（默认关闭）：第二轮多一个选择，付费只亮一张牌的花色、不亮点数。别人看到的是牌背加一个大花色图标。AI 也会使用这个选项。","修复大厅内容过长时，顶部被裁掉、滑不上去的问题。"]},{"v":"v0.6","d":"11-26 11:40","items":["新增 <b>235 吃豹子</b>开关（只在经典牌堆，默认关闭）：2、3、5 不同花时能吃掉豹子。多人开牌时，只要有人是 235，所有豹子都算输，其余人再正常比。","开出 235 吃豹子有全屏特效。","大厅新增「怎么玩」按钮，开局前就能看规则。"]},{"v":"v0.5.2","d":"11-26 11:03 – 11:12","items":["自己的明牌和暗牌区分更明显：明牌抬起、金边、睁眼标签；暗牌下沉、紫色外框、闭眼标签。标签挪到牌的上方，不挡点数。"]},{"v":"v0.5.1","d":"11-26 00:42","items":["AI 去掉台词。","AI 下注大小不再暴露牌力：好牌和诈唬用同一套下注大小。","AI 在一场里<b>记住每个对手</b>：统计诈唬率和被加注后的弃牌率，据此调整跟注和诈唬。","「读亮牌」功能测试后效果为负，默认关闭。"]},{"v":"v0.5","d":"11-25 23:57","items":["产品更名为<b>诈唬牌</b>。","人数改为 2 到 8 人任选。只留大牌牌堆最多 6 人。","<b>加注金额自由选</b>：滑杆加上「最小 / 半池 / 满池」快捷按钮，闷牌时显示实际只付一半。","AI 增加到 7 个角色，各有像素头像和牌风：七号（紧凶·墨镜猫）、小罗（跟注站·鱼）、阿飞（松凶·火焰头）、豆豆（闷王·熊猫）、阿珍（石头·猫头鹰）、小狐（狡猾·狐狸）、大熊（均衡·熊）。","AI 遇到难的决定会多想一会儿；狡猾型拿到大牌会先装弱。","新增 8-bit <b>音效</b>和像素<b>特效</b>：发牌、翻牌、筹码、加注冲击波、暗保印章、赢牌金币、豹子和顺金全屏演出，右上角可以静音。","牌桌中央加了牌桌垫和随底池长高的筹码堆；轮到你时操作栏发光。"]},{"v":"v0.4","d":"11-25 23:29","items":["新增<b>房间号联机</b>：房主建房得到 4 位房间号，朋友输入房间号加入；空位由 AI 补上，有人掉线由 AI 代打。","每个人只收到自己能看的牌，看不到别人的暗牌。"]},{"v":"v0.3","d":"11-25 23:10","items":["AI 会根据对手的下注、跟注、过牌、暗保<b>推断对手的牌型范围</b>，不再把对手的暗牌当成随机牌。","新增四种 AI 牌风：紧凶、跟注站、松凶、闷王。两人局可以选对手。","暗保价格从固定 20 改为<b>底池的 25%</b>（最少 20）。","牌背的数字 3 换成像素眼睛。"]},{"v":"v0.2.1","d":"11-25 19:41","items":["AI 出手速度放慢。"]},{"v":"v0.2","d":"11-25 19:27","items":["新增三种牌堆：经典（52 张）、去小牌（去掉 2–6）、只留大牌（去掉 2–8）。","新增 5 人局。","数字字体换成 Press Start 2P，修复 5、2 等数字不好认的问题。","洗牌改用加密随机数。","字体内嵌进文件，国内网络和离线都能正常显示。"]},{"v":"v0.1","d":"11-25 18:19","items":["第一版：1v1 对战 AI，复古像素风竖屏 H5。","规则：底注 → 暗注 → 亮一张 → 明注 → 亮或保 → 终注 → 开牌，按拼三张比牌型大小。","闷牌（下注半价）、暗保、同时亮牌、明牌大的先说话、每轮最多加注 3 次。"]}];
+const CHANGELOG=[{"v":"v0.12","d":"11-27 14:15","items":["联机时一手结束后，<b>房主点「下一把」</b>才开下一手，不再自动倒数 10 秒；其他人看到「等房主开下一把」。","联机时一手结束后可以<b>亮牌</b>：弃了牌的人，或者别人都弃牌、没开牌就赢的人，可以点「亮牌」把自己的牌亮给所有人看。开牌时没弃牌的人本来就亮了，不用再点。"]},{"v":"v0.11.1","d":"11-27 14:03","items":["联机服务器默认端口从 8787 改成 8080：公司网络拦了 8787，8080 能连上。","服务器已经开着时再双击启动，会提示「端口已经被占用」，不再直接报错退出。"]},{"v":"v0.11","d":"11-27 11:39","items":["<b>联机改成服务器当裁判</b>：房主在自己电脑上运行一个小服务器，大家用手机浏览器打开电脑的地址就能联机，不再用点对点连接。发牌、判输赢、计时、AI 都在服务器上，每台手机只收到自己能看的牌，房主也看不到别人的暗牌。","房码改成 6 位。房间页里，房主可以加减座位、加 AI（能换角色）、一键补满 AI、移除 AI、把人移出房间。空位开局时由 AI 补上。","牌堆、四张牌、各种规则开关挪到房主点「开始」后弹出的<b>本场设置</b>里，其他人会看到「房主正在设置本场…」。设置会沿用上一场。","一场打到房主点「结束本场」为止：打到一半点的话，这一手打完再结算，所有人会看到「最后一手」提示。","新增<b>本场结算</b>：按净输赢排名（净输赢 = 最后筹码 − 入场 2000 − 补的码），显示赢了几手、补码次数、最大一池；评出本场赢家、诈唬王、最大一手、铁头（诈唬被抓最多）、提款机（补码最多）。点「回到房间」就能再开一场。","每步操作限时 30 秒，牌桌底部有倒计时条，最后 10 秒变红；超时自动过牌或弃牌。两手之间等 10 秒，会显示倒数。","有人掉线或中途离开，AI 立刻接管他的座位打完这一场，结算里标「托管」。房主走了，房主身份自动交给下一位玩家。不做断线重连。","联机中点左上角「模式」打开房间菜单：回到牌桌、结束本场（房主）、离开。","联机消息里的结果文字改成按每个人的视角写，不再把「底池归你」发给所有人。","去掉网页里的点对点联机组件，文件小了约 90KB。"]},{"v":"v0.10","d":"11-27 11:05","items":["新增<b>四张牌</b>开关（默认关闭）：每人四张，开牌时挑最好的三张按拼三张比。第一轮看前两张，第二轮看后两张；最后桌上两张明牌、两张暗牌。","有一张牌不参与比大小，可以亮出去当诱饵；AI 也会这么做。","你看全四张后，提示栏会写明哪张不算；开牌时没用上的牌会变暗。","人数上限：经典 8 人、去小牌 7 人、只留大牌 5 人。四张模式下不用「235 吃豹子」。","牌力参考页会显示四张模式下的牌型概率。","AI 算牌力改用查表，三张模式也快了一倍多，手机上 AI 思考更流畅。","小屏幕上，自己牌上方的「明牌 / 暗牌」标签不再压住中间的提示文字。"]},{"v":"v0.9.3","d":"11-27 00:49","items":["复盘按钮改成亮紫色的「看复盘」，不再容易错过。","人数选择里 4 人局标上「推荐」（多人局的甜区），人数仍然自己选。","AI 亮牌按牌风混合：第一轮石头型更爱亮小藏大、松凶更爱亮大装强；第二轮拿到对子时，有的牌风会故意把对子亮出来施压，不再「从不亮明对」。","复盘的关键决定加上牌力档位标签（坚果 / 强牌 / 中对 / 弱对 / 大单张 / 弱牌 / 空气等），一眼看出 AI 当时拿的是什么级别的牌。","新增<b>新手模式</b>开关（默认关闭）：加注只有小、中、大三档（40 / 80 / 160），不用拖滑杆。和超池加注二选一。"]},{"v":"v0.9.2","d":"11-26 16:30","items":["游戏里加入<b>更新记录</b>：大厅「怎么玩」旁边的按钮可以查看每个版本改了什么，有新版本时按钮上会出现小红点。"]},{"v":"v0.9.1","d":"11-26 16:06","items":["<b>复盘改版</b>：最上面一句话说清这局谁用什么牌赢了多少、看点是什么；所有人的牌画成像素小牌；只挑出 AI 最关键的几个决定，每个配一句大白话理由和一根胜率条（条过了竖线就该跟或下注，没过就该弃）；完整过程折叠起来，每回合压成一行。"]},{"v":"v0.9","d":"11-26 15:33","items":["新增<b>牌力参考页</b>：规则弹窗分成「怎么玩」和「牌力参考」两页。参考页按当前牌堆列出各牌型的出现概率、几手代表牌在 2/4/6/8 人局的胜率，以及起手两张该强打、可玩还是该弃。","新增<b>复盘</b>（仅单机）：每局结束可以查看所有人的牌，以及每个 AI 每一步的动作和理由。","新增<b>超池加注</b>开关（默认关闭）：加注范围变成底池的 25% 到 2.5 倍，还能全下。全下以在局玩家里筹码最少的人为上限，不会出现边池。","规则页「暗注」的描述改成加注金额自己定。"]},{"v":"v0.8.1","d":"11-26 15:12","items":["AI 底线：终注轮牌力排在后 30% 的空气牌，面对下注只能弃牌或诈唬加注，任何牌风都不跟注。修复了跟注站「拿空气牌跟注」的问题。"]},{"v":"v0.8","d":"11-26 13:29","items":["只亮花色的价格从底池的 10% 涨到 15%。","新增<b>封口费</b>开关（默认关闭）：打开后，暗保和只亮花色的钱平分给其他在局玩家，不进底池。"]},{"v":"v0.7.1","d":"11-26 12:27","items":["按手机实际可用高度自适应布局。修复 iPhone Safari 带工具栏时，多人局里流程条压到对手、提示文字被挡的问题。"]},{"v":"v0.7","d":"11-26 12:14","items":["新增<b>分级亮牌</b>开关（默认关闭）：第二轮多一个选择，付费只亮一张牌的花色、不亮点数。别人看到的是牌背加一个大花色图标。AI 也会使用这个选项。","修复大厅内容过长时，顶部被裁掉、滑不上去的问题。"]},{"v":"v0.6","d":"11-26 11:40","items":["新增 <b>235 吃豹子</b>开关（只在经典牌堆，默认关闭）：2、3、5 不同花时能吃掉豹子。多人开牌时，只要有人是 235，所有豹子都算输，其余人再正常比。","开出 235 吃豹子有全屏特效。","大厅新增「怎么玩」按钮，开局前就能看规则。"]},{"v":"v0.5.2","d":"11-26 11:03 – 11:12","items":["自己的明牌和暗牌区分更明显：明牌抬起、金边、睁眼标签；暗牌下沉、紫色外框、闭眼标签。标签挪到牌的上方，不挡点数。"]},{"v":"v0.5.1","d":"11-26 00:42","items":["AI 去掉台词。","AI 下注大小不再暴露牌力：好牌和诈唬用同一套下注大小。","AI 在一场里<b>记住每个对手</b>：统计诈唬率和被加注后的弃牌率，据此调整跟注和诈唬。","「读亮牌」功能测试后效果为负，默认关闭。"]},{"v":"v0.5","d":"11-25 23:57","items":["产品更名为<b>诈唬牌</b>。","人数改为 2 到 8 人任选。只留大牌牌堆最多 6 人。","<b>加注金额自由选</b>：滑杆加上「最小 / 半池 / 满池」快捷按钮，闷牌时显示实际只付一半。","AI 增加到 7 个角色，各有像素头像和牌风：七号（紧凶·墨镜猫）、小罗（跟注站·鱼）、阿飞（松凶·火焰头）、豆豆（闷王·熊猫）、阿珍（石头·猫头鹰）、小狐（狡猾·狐狸）、大熊（均衡·熊）。","AI 遇到难的决定会多想一会儿；狡猾型拿到大牌会先装弱。","新增 8-bit <b>音效</b>和像素<b>特效</b>：发牌、翻牌、筹码、加注冲击波、暗保印章、赢牌金币、豹子和顺金全屏演出，右上角可以静音。","牌桌中央加了牌桌垫和随底池长高的筹码堆；轮到你时操作栏发光。"]},{"v":"v0.4","d":"11-25 23:29","items":["新增<b>房间号联机</b>：房主建房得到 4 位房间号，朋友输入房间号加入；空位由 AI 补上，有人掉线由 AI 代打。","每个人只收到自己能看的牌，看不到别人的暗牌。"]},{"v":"v0.3","d":"11-25 23:10","items":["AI 会根据对手的下注、跟注、过牌、暗保<b>推断对手的牌型范围</b>，不再把对手的暗牌当成随机牌。","新增四种 AI 牌风：紧凶、跟注站、松凶、闷王。两人局可以选对手。","暗保价格从固定 20 改为<b>底池的 25%</b>（最少 20）。","牌背的数字 3 换成像素眼睛。"]},{"v":"v0.2.1","d":"11-25 19:41","items":["AI 出手速度放慢。"]},{"v":"v0.2","d":"11-25 19:27","items":["新增三种牌堆：经典（52 张）、去小牌（去掉 2–6）、只留大牌（去掉 2–8）。","新增 5 人局。","数字字体换成 Press Start 2P，修复 5、2 等数字不好认的问题。","洗牌改用加密随机数。","字体内嵌进文件，国内网络和离线都能正常显示。"]},{"v":"v0.1","d":"11-25 18:19","items":["第一版：1v1 对战 AI，复古像素风竖屏 H5。","规则：底注 → 暗注 → 亮一张 → 明注 → 亮或保 → 终注 → 开牌，按拼三张比牌型大小。","闷牌（下注半价）、暗保、同时亮牌、明牌大的先说话、每轮最多加注 3 次。"]}];
 const LATEST=CHANGELOG[0].v;
 function changesHTML(){
   return `<h2>更新记录</h2><p class="rvnote">当前版本 ${LATEST}，最新的在最上面。</p>`+
@@ -1434,7 +1441,7 @@ function render(){
       if(sv!=null&&el.dataset.sv!==String(sv)){const sb=el.querySelector('.sbadge');sb.className='sbadge '+(sv===1||sv===3?'r':'k');sb.innerHTML=SUITS[sv];el.dataset.sv=sv}
       if(sv==null)el.dataset.sv='';
       if(!c){el.classList.add('down');el.classList.remove('win','lose');if(i===0){const tg=el.querySelector('.tag');if(sv!=null){tg.className='tag on half';tg.innerHTML=SUITS[sv]+'亮花色';tg.dataset.h=''}else tg.className='tag';el.classList.remove('ming','an','half');el.classList.toggle('pickable',(st==='R1'||st==='R2')&&!G.locked&&!p.folded&&eligible(k));el.classList.toggle('picked',G.pick===k)}continue}
-      const up=(isShow&&!p.folded)||p.revealed[k]||(i===0&&known.includes(k));
+      const up=(isShow&&!p.folded)||p.revealed[k]||(i===0&&known.includes(k))||(!!G.result&&!!p.shown);
       if(up&&el.dataset.cid!==String(cid(c)))setFace(el,c);
       if(up&&el.classList.contains('down'))flips.push(el);
       el.classList.toggle('down',!up);
@@ -1451,7 +1458,7 @@ function render(){
     }
     seat.querySelector('.seal').classList.toggle('on',p.bao&&!isShow);
     const hn=seat.querySelector('.hname');
-    if(isShow&&!p.folded){hn.textContent=handName(p.cards);hn.className='hname on'+(won&&won.includes(i)?' win':'')}else hn.className='hname';
+    if((isShow&&!p.folded)||(G.result&&p.shown&&p.cards.every(Boolean))){hn.textContent=handName(p.cards);hn.className='hname on'+(won&&won.includes(i)?' win':'')}else hn.className='hname';
     const bd=[];
     if(G.dealer===i)bd.push('<span class="badge dealer">庄</span>');
     if(p.folded)bd.push('<span class="badge fold">弃牌</span>');
@@ -1549,7 +1556,7 @@ function renderActions(){
   const h=G.p[0],st=G.stage,A=$('#actions');let html='';
   if(G.result){
     const n=G.result.net;
-    html=`<div class="res ${n>0?'win':n<0?'lose':''}"><b>${n>0?'+':''}${n}</b><span>${n>0?'这一局赢了':n<0?'这一局输了':'这一局打平'}</span></div>`+(NET==='off'?B('看复盘','violet','review'):'')+(NET==='guest'?`<div class="wait" id="nextT">下一局马上开始</div>`:B('下一局','teal wide','next'));
+    html=`<div class="res ${n>0?'win':n<0?'lose':''}"><b>${n>0?'+':''}${n}</b><span>${n>0?'这一局赢了':n<0?'这一局输了':'这一局打平'}</span></div>`+(NET==='off'?B('看复盘','violet','review'):'')+(NET==='guest'?netResultBtns():B('下一局','teal wide','next'));
   }else if(h.folded){
     html=`<div class="wait">你已弃牌</div>`+(NET==='guest'?'':B(G.skip?'跳过中…':'跳过这局','plum','skip',G.skip));
   }else if(st==='R1'||st==='R2'){
@@ -1785,6 +1792,7 @@ function onSrv(m){
     case'pong':return;
     case'room':room=m;
       if(m.phase!=='play'&&!settleOn)roomView();
+      else if(G&&G.result)render();
       if($('#lobby').classList.contains('on'))syncLobby();
       return;
     case'err':if(room)roomView(m.msg,true);else{leaveNet();roomError(clean2(m.msg)||'进不去这个房间')}return;
@@ -1879,6 +1887,12 @@ function applyState(v){
   (v.events||[]).forEach(e=>bubble(e.i,e.text,e.cls,e.quiet));
   tick();
 }
+/* 一手结束后：亮牌（弃牌的人、或别人都弃牌时的赢家）；房主点「下一把」 */
+function netResultBtns(){
+  const h=G.p[0],R=G.result,canShow=!h.shown&&(h.folded||R.how==='fold');
+  if(G.endAfter)return`<div class="wait">本场结束，马上结算</div>`;
+  return(canShow?B('亮牌','violet','showMine'):'')+(room&&room.host?B('下一把','teal wide','nextHand'):`<div class="wait">等房主开下一把</div>`);
+}
 /* 倒计时条和「下一局 X 秒」；每 5 秒报一次平安，15 秒收不到服务器消息算断开 */
 function tick(){
   const bar=$('#tbar');
@@ -1886,7 +1900,6 @@ function tick(){
   const rem=G.dl?Math.max(0,G.dl-Date.now()):0,mine=(G.turn===0&&betting())||((G.stage==='R1'||G.stage==='R2')&&!G.locked&&!G.p[0].folded);
   if(rem>0&&!G.result){bar.hidden=false;bar.className='tbar'+(mine?' mine':'')+(mine&&rem<10000?' hurry':'');bar.firstChild.style.width=(rem/NET_TURN_MS*100).toFixed(1)+'%';bar.dataset.s=Math.ceil(rem/1000)}
   else bar.hidden=true;
-  const nt=$('#nextT');if(nt)nt.textContent=G.endAfter?'本场结束，马上结算':rem>0?`下一局 ${Math.ceil(rem/1000)} 秒后开始`:'下一局马上开始';
 }
 setInterval(()=>{
   tick();
@@ -1927,6 +1940,8 @@ app.addEventListener('click',e=>{
     case'sLo':S.lo=+b.dataset.v;saveS();setupView();break;
     case'sTog':{const k=b.dataset.k;S[k]=!S[k];if(k==='over'&&S.over)S.simple=false;if(k==='simple'&&S.simple)S.over=false;saveS();setupView();break}
     case'rGo':send({t:'start',cfg:{lo:S.lo,four:!!S.four,r235:!!S.r235,suit:!!S.suitOpt,fee:!!S.fee,over:!!S.over,simple:!!S.simple}});break;
+    case'showMine':send({t:'show'});b.disabled=true;break;
+    case'nextHand':send({t:'next'});b.disabled=true;break;
     case'endMatch':send({t:'end'});$('#lobby').classList.remove('on');$('#room').classList.remove('on');break;
     case'settleBack':settleOn=false;$('#settle').classList.remove('on');send({t:'back'});roomView();break;
     case'closeRoom':$('#room').classList.remove('on');break;
